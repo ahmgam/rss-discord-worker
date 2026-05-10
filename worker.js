@@ -94,7 +94,7 @@ function parseRSS(xml) {
   for (const [, block] of entries) {
     const title = extractText(block, isAtom ? "title" : "title");
     const link  = isAtom ? extractAtomLink(block) : extractText(block, "link");
-    const desc  = stripHtml(
+    const desc  = htmlToDiscordMarkdown(
       extractText(block, isAtom ? "summary" : "description") ||
       extractText(block, "content")
     );
@@ -106,7 +106,7 @@ function parseRSS(xml) {
       items.push({
         title:   decodeEntities(title.trim()),
         link:    link.trim(),
-        desc:    truncate(decodeEntities(desc.trim()), 300),
+        desc:    truncate(desc.trim(), 2000), // Discord embed description limit
         pubDate: pubDate || 0,
       });
     }
@@ -130,8 +130,127 @@ function extractAtomLink(block) {
   return m ? m[1] : "";
 }
 
-function stripHtml(html) {
-  return html.replace(/<[^>]+>/g, " ").replace(/\s{2,}/g, " ").trim();
+/**
+ * Convert a subset of HTML to Discord Markdown.
+ *
+ * Discord embed descriptions support:
+ *   **bold**  *italic*  __underline__  ~~strikethrough~~
+ *   `inline code`  ```code block```
+ *   [text](url)  > blockquote  ### heading  • list items
+ *
+ * Conversion map
+ * ─────────────────────────────────────────────────────
+ *  <b>, <strong>            → **text**
+ *  <i>, <em>                → *text*
+ *  <u>, <ins>               → __text__
+ *  <s>, <del>, <strike>     → ~~text~~
+ *  <code>                   → `text`
+ *  <pre>, <pre><code>       → ```text```
+ *  <a href="…">             → [text](url)
+ *  <h1>–<h6>                → ### text  (Discord has one heading level)
+ *  <p>, <br>                → newline
+ *  <blockquote>             → > text
+ *  <ul>/<ol> + <li>         → • item  /  1. item
+ *  <hr>                     → ─────
+ *  Everything else          → stripped (tag removed, text kept)
+ */
+function htmlToDiscordMarkdown(html) {
+  if (!html) return "";
+
+  let md = html;
+
+  // ── Pre-process: unwrap CDATA, normalise line-breaks ──────────────────────
+  md = md.replace(/<!?\[CDATA\[([\s\S]*?)\]\]>/gi, "$1");
+  md = md.replace(/\r\n?/g, "\n");
+
+  // ── Block elements (convert before inline so nesting resolves correctly) ──
+
+  // <pre><code> … </code></pre>  or  <pre> … </pre>
+  md = md.replace(/<pre[^>]*>\s*(?:<code[^>]*>)?([\s\S]*?)(?:<\/code>)?\s*<\/pre>/gi,
+    (_, inner) => "```\n" + stripAllTags(inner).trim() + "\n```");
+
+  // <blockquote>
+  md = md.replace(/<blockquote[^>]*>([\s\S]*?)<\/blockquote>/gi, (_, inner) => {
+    const lines = htmlToDiscordMarkdown(inner).trim().split("\n");
+    return lines.map(l => "> " + l).join("\n") + "\n";
+  });
+
+  // Ordered lists — number each <li>
+  md = md.replace(/<ol[^>]*>([\s\S]*?)<\/ol>/gi, (_, inner) => {
+    let n = 0;
+    return inner.replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, (__, li) =>
+      `${++n}. ${htmlToDiscordMarkdown(li).trim()}\n`
+    ) + "\n";
+  });
+
+  // Unordered lists
+  md = md.replace(/<ul[^>]*>([\s\S]*?)<\/ul>/gi, (_, inner) =>
+    inner.replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, (__, li) =>
+      `• ${htmlToDiscordMarkdown(li).trim()}\n`
+    ) + "\n"
+  );
+
+  // Headings  →  ### heading\n
+  md = md.replace(/<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/gi,
+    (_, inner) => "### " + stripAllTags(inner).trim() + "\n");
+
+  // Paragraphs / divs  →  double newline
+  md = md.replace(/<\/p>/gi, "\n\n");
+  md = md.replace(/<p[^>]*>/gi, "");
+  md = md.replace(/<\/div>/gi, "\n");
+  md = md.replace(/<div[^>]*>/gi, "");
+
+  // <br>
+  md = md.replace(/<br\s*\/?>/gi, "\n");
+
+  // <hr>
+  md = md.replace(/<hr\s*\/?>/gi, "\n─────────────────────\n");
+
+  // ── Inline elements ────────────────────────────────────────────────────────
+
+  // Bold
+  md = md.replace(/<(?:b|strong)[^>]*>([\s\S]*?)<\/(?:b|strong)>/gi,
+    (_, t) => "**" + t + "**");
+
+  // Italic
+  md = md.replace(/<(?:i|em)[^>]*>([\s\S]*?)<\/(?:i|em)>/gi,
+    (_, t) => "*" + t + "*");
+
+  // Underline
+  md = md.replace(/<(?:u|ins)[^>]*>([\s\S]*?)<\/(?:u|ins)>/gi,
+    (_, t) => "__" + t + "__");
+
+  // Strikethrough
+  md = md.replace(/<(?:s|del|strike)[^>]*>([\s\S]*?)<\/(?:s|del|strike)>/gi,
+    (_, t) => "~~" + t + "~~");
+
+  // Inline code  (must come after bold/italic to avoid double-wrapping)
+  md = md.replace(/<code[^>]*>([\s\S]*?)<\/code>/gi,
+    (_, t) => "`" + stripAllTags(t) + "`");
+
+  // Links  →  [text](url)
+  md = md.replace(/<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi,
+    (_, url, text) => "[" + stripAllTags(text).trim() + "](" + url.trim() + ")");
+
+  // Images  →  [image](src)  (shows as a link; Discord won't inline-embed)
+  md = md.replace(/<img[^>]+src=["']([^"']+)["'][^>]*\/?>/gi,
+    (_, src) => "[image](" + src.trim() + ")");
+
+  // ── Strip any remaining tags ───────────────────────────────────────────────
+  md = stripAllTags(md);
+
+  // ── Decode HTML entities ───────────────────────────────────────────────────
+  md = decodeEntities(md);
+
+  // ── Collapse excessive blank lines (max 2 consecutive) ────────────────────
+  md = md.replace(/\n{3,}/g, "\n\n").trim();
+
+  return md;
+}
+
+/** Remove all remaining HTML tags, keeping their text content. */
+function stripAllTags(html) {
+  return html.replace(/<[^>]+>/g, "");
 }
 
 function decodeEntities(str) {
