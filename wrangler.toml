@@ -6,22 +6,3 @@ compatibility_flags = ["nodejs_compat"]
 # ── Cron trigger: runs every hour at :00 ──────────────────────────────────────
 [triggers]
 crons = ["0 * * * *"]
-
-# ── Environment variables ─────────────────────────────────────────────────────
-# Set the real values via:
-#   npx wrangler secret put DISCORD_WEBHOOK_URL
-#   npx wrangler secret put RSS_SOURCES
-#
-# Or paste them in the Cloudflare dashboard → Worker → Settings → Variables.
-#
-# For local dev you can use a .dev.vars file (gitignored):
-#
-#   DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
-#   RSS_SOURCES=https://feeds.bbci.co.uk/news/rss.xml
-#               https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml
-#               https://techcrunch.com/feed/
-
-[vars]
-# Non-secret placeholder — override with wrangler secret / dashboard
-DISCORD_WEBHOOK_URL = ""
-RSS_SOURCES         = ""
