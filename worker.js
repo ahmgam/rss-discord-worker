@@ -159,8 +159,14 @@ function htmlToDiscordMarkdown(html) {
 
   let md = html;
 
-  // ── Pre-process: unwrap CDATA, normalise line-breaks ──────────────────────
+  // ── Pre-process ───────────────────────────────────────────────────────────
+  // 1. Unwrap CDATA sections
   md = md.replace(/<!?\[CDATA\[([\s\S]*?)\]\]>/gi, "$1");
+  // 2. Decode HTML entities FIRST so tag-matching regexes below see real < >
+  //    chars. Many feeds encode descriptions as &lt;p&gt;…&lt;/p&gt; instead
+  //    of raw tags — without this step every conversion regex silently no-ops.
+  md = decodeEntities(md);
+  // 3. Normalise line-breaks
   md = md.replace(/\r\n?/g, "\n");
 
   // ── Block elements (convert before inline so nesting resolves correctly) ──
@@ -239,10 +245,8 @@ function htmlToDiscordMarkdown(html) {
   // ── Strip any remaining tags ───────────────────────────────────────────────
   md = stripAllTags(md);
 
-  // ── Decode HTML entities ───────────────────────────────────────────────────
-  md = decodeEntities(md);
-
   // ── Collapse excessive blank lines (max 2 consecutive) ────────────────────
+  // (entities were already decoded at the top of this function)
   md = md.replace(/\n{3,}/g, "\n\n").trim();
 
   return md;
